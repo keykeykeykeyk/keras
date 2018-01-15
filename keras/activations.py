@@ -76,6 +76,10 @@ def tanh(x):
     return K.tanh(x)
 
 
+def exponential(x):
+    return K.exp(x)
+
+
 def sigmoid(x):
     return K.sigmoid(x)
 

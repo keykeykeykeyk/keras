@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import math
 from keras import activations
 from .. import backend as K
 from ..engine import InputSpec
@@ -607,3 +608,27 @@ class MixtureOfGaussian1DAttention(_RNNAttentionCell):
         }
         base_config = super(MixtureOfGaussian1DAttention, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+
+class MultiplicativeAttention(_RNNAttentionCell):
+    def __init__(self, cell, scaled=True, **kwargs):
+        super(MultiplicativeAttention, self).__init__(cell, **kwargs)
+        self.scaled = scaled
+
+    def attention_call(self,
+                       inputs,
+                       cell_states,
+                       attended,
+                       attention_states,
+                       training=None):
+        h_tm1 = cell_states[0]
+        context = attended[0]
+        logits = K.batch_dot(context, h_tm1)
+        if self.scaled:
+            logits /= math.sqrt(self.cell.units)
+        alpha = K.softmax(logits)
+        attention_h = K.batch_dot(alpha, context, axes=1)
+        return attention_h, [attention_h]
+
+    def attention_build(self, input_shape, cell_state_size, attended_shape):
+        self._attention_size = attended_shape[0][-1]

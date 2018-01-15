@@ -113,7 +113,7 @@ class _RNNAttentionCell(Layer):
 
     def __init__(self, cell,
                  attend_after=False,
-                 concatenate_input=False,
+                 concatenate_input=True,
                  **kwargs):
         self.cell = cell  # must be set before calling super
         super(_RNNAttentionCell, self).__init__(**kwargs)
@@ -173,7 +173,7 @@ class _RNNAttentionCell(Layer):
 
     @property
     def attention_size(self):
-        """Size off attention encoding, an integer.
+        """Size of attention encoding, an integer.
         """
         if self._attention_size is None and self.built:
             raise NotImplementedError(

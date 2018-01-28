@@ -2565,7 +2565,7 @@ def rnn(step_function, inputs, initial_states,
             Must be specified if using unrolling with Theano.
 
     # Returns
-        A tuple, `(last_output, outputs, new_states)`.
+        A tuple, `(last_output, outputs, new_states, state_sequences)`.
 
             last_output: the latest output of the rnn, of shape `(samples, ...)`
             outputs: tensor with shape `(samples, time, ...)` where each
@@ -2573,6 +2573,9 @@ def rnn(step_function, inputs, initial_states,
                 at time `t` for sample `s`.
             new_states: list of tensors, latest states returned by
                 the step function, of shape `(samples, ...)`.
+            state_sequences: list of tensors with shape `(samples, time, ...)`
+                where `state_sequences[i][s, t]` is the `i`-th state returned
+                by the step function at time `t` for sample `s`.
 
     # Raises
         ValueError: if input dimension is less than 3.
@@ -2658,6 +2661,7 @@ def rnn(step_function, inputs, initial_states,
             last_output = successive_outputs[-1]
             new_states = successive_states[-1]
             outputs = tf.stack(successive_outputs)
+            state_sequences = [tf.stack(x) for x in zip(*successive_states)]
         else:
             for inp in input_list:
                 output, states = step_function(inp, states + constants)
@@ -2668,14 +2672,20 @@ def rnn(step_function, inputs, initial_states,
             last_output = successive_outputs[-1]
             new_states = successive_states[-1]
             outputs = tf.stack(successive_outputs)
-
+            state_sequences = [tf.stack(x) for x in zip(*successive_states)]
     else:
         if go_backwards:
             inputs = reverse(inputs, 0)
 
-        states = tuple(initial_states)
-
         time_steps = tf.shape(inputs)[0]
+        states = tuple(initial_states)
+        state_sequences_ta = []
+        for state in states:
+            state_sequences_ta.append(tensor_array_ops.TensorArray(
+                dtype=state.dtype,
+                size=time_steps,
+                tensor_array_name='state_sequences_ta'))
+
         outputs, _ = step_function(inputs[0], initial_states + constants)
         output_ta = tensor_array_ops.TensorArray(
             dtype=outputs.dtype,
@@ -2705,16 +2715,17 @@ def rnn(step_function, inputs, initial_states,
                 tensor_array_name='mask_ta')
             mask_ta = mask_ta.unstack(mask)
 
-            def _step(time, output_ta_t, *states):
+            def _step(time, output_ta_t, state_sequences_ta_t, *states):
                 """RNN step function.
 
                 # Arguments
                     time: Current timestep value.
                     output_ta_t: TensorArray.
+                    state_sequences_ta_t: List of TensorArray.
                     *states: List of states.
 
                 # Returns
-                    Tuple: `(time + 1,output_ta_t) + tuple(new_states)`
+                    Tuple: `(time + 1, output_ta_t, state_sequences_ta_t) + tuple(new_states)`
                 """
                 current_input = input_ta.read(time)
                 mask_t = mask_ta.read(time)
@@ -2729,20 +2740,24 @@ def rnn(step_function, inputs, initial_states,
                 tiled_mask_t = tf.tile(mask_t,
                                        tf.stack([1, tf.shape(output)[1]]))
                 output = tf.where(tiled_mask_t, output, states[0])
-                new_states = [tf.where(tiled_mask_t, new_states[i], states[i]) for i in range(len(states))]
+                new_states = [tf.where(tiled_mask_t, new_states[i], states[i])
+                              for i in range(len(states))]
                 output_ta_t = output_ta_t.write(time, output)
-                return (time + 1, output_ta_t) + tuple(new_states)
+                for i in range(len(new_states)):
+                    state_sequences_ta_t[i].write(time, new_states[i])
+                return (time + 1, output_ta_t, state_sequences_ta_t) + tuple(new_states)
         else:
-            def _step(time, output_ta_t, *states):
+            def _step(time, output_ta_t, state_sequences_ta_t, *states):
                 """RNN step function.
 
                 # Arguments
                     time: Current timestep value.
                     output_ta_t: TensorArray.
+                    state_sequences_ta_t: List of TensorArray.
                     *states: List of states.
 
                 # Returns
-                    Tuple: `(time + 1,output_ta_t) + tuple(new_states)`
+                    Tuple: `(time + 1, output_ta_t, state_sequences_ta_t) + tuple(new_states)`
                 """
                 current_input = input_ta.read(time)
                 output, new_states = step_function(current_input,
@@ -2754,25 +2769,30 @@ def rnn(step_function, inputs, initial_states,
                 for state, new_state in zip(states, new_states):
                     new_state.set_shape(state.get_shape())
                 output_ta_t = output_ta_t.write(time, output)
-                return (time + 1, output_ta_t) + tuple(new_states)
+                for i in range(len(new_states)):
+                    state_sequences_ta_t[i].write(time, new_states[i])
+                return (time + 1, output_ta_t, state_sequences_ta_t) + tuple(new_states)
 
         final_outputs = control_flow_ops.while_loop(
             cond=lambda time, *_: time < time_steps,
             body=_step,
-            loop_vars=(time, output_ta) + states,
+            loop_vars=(time, output_ta, state_sequences_ta) + states,
             parallel_iterations=32,
             swap_memory=True)
         last_time = final_outputs[0]
         output_ta = final_outputs[1]
-        new_states = final_outputs[2:]
+        state_sequences_ta = final_outputs[2]
+        new_states = final_outputs[3:]
 
         outputs = output_ta.stack()
+        state_sequences = [x.stack() for x in state_sequences_ta]
         last_output = output_ta.read(last_time - 1)
 
     axes = [1, 0] + list(range(2, len(outputs.get_shape())))
     outputs = tf.transpose(outputs, axes)
+    state_sequences = [tf.transpose(x, axes) for x in state_sequences]
     last_output._uses_learning_phase = uses_learning_phase
-    return last_output, outputs, new_states
+    return last_output, outputs, new_states, state_sequences
 
 
 def switch(condition, then_expression, else_expression):

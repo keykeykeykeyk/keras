@@ -596,14 +596,16 @@ class RNN(Layer):
             def step(inputs, states):
                 return self.cell.call(inputs, states, **kwargs)
 
-        last_output, outputs, states = K.rnn(step,
-                                             inputs,
-                                             initial_state,
-                                             constants=constants,
-                                             go_backwards=self.go_backwards,
-                                             mask=mask,
-                                             unroll=self.unroll,
-                                             input_length=timesteps)
+        last_output, outputs, states, state_sequences = K.rnn(
+            step,
+            inputs,
+            initial_state,
+            constants=constants,
+            go_backwards=self.go_backwards,
+            mask=mask,
+            unroll=self.unroll,
+            input_length=timesteps)
+
         if self.stateful:
             updates = []
             for i in range(len(states)):

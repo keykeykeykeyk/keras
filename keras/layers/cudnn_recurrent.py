@@ -8,7 +8,7 @@ from .. import backend as K
 from .. import initializers
 from .. import regularizers
 from .. import constraints
-from .recurrent import RNN
+from .recurrent import RNN, _generate_dropout_mask
 from ..layers import InputSpec
 
 from collections import namedtuple
@@ -32,6 +32,7 @@ class _CuDNNRNN(RNN):
                  return_state=False,
                  go_backwards=False,
                  stateful=False,
+                 recurrent_dropout=0.,
                  **kwargs):
         if K.backend() != 'tensorflow':
             raise RuntimeError('CuDNN RNNs are only available '
@@ -52,6 +53,8 @@ class _CuDNNRNN(RNN):
         self.constants_spec = None
         self._states = None
         self._num_constants = None
+        self.recurrent_dropout = min(1., max(0., recurrent_dropout))
+        self._recurrent_dropout_mask = None
 
     def _canonical_to_params(self, weights, biases):
         import tensorflow as tf
@@ -87,7 +90,7 @@ class _CuDNNRNN(RNN):
         if self.go_backwards:
             # Reverse time axis.
             inputs = K.reverse(inputs, 1)
-        output, states = self._process_batch(inputs, initial_state)
+        output, states = self._process_batch(inputs, initial_state, training)
 
         if self.stateful:
             updates = []
@@ -266,20 +269,29 @@ class CuDNNGRU(_CuDNNRNN):
 
         self.built = True
 
-    def _process_batch(self, inputs, initial_state):
+    def _process_batch(self, inputs, initial_state, training):
         import tensorflow as tf
         inputs = tf.transpose(inputs, (1, 0, 2))
         input_h = initial_state[0]
         input_h = tf.expand_dims(input_h, axis=0)
+
+        if (0 < self.recurrent_dropout < 1 and
+                self._recurrent_dropout_mask is None):
+            self._recurrent_dropout_mask = _generate_dropout_mask(
+                K.ones((self.units, self.units)),
+                self.recurrent_dropout,
+                training=training,
+                count=3)
+        rec_dp_mask = self._recurrent_dropout_mask
 
         params = self._canonical_to_params(
             weights=[
                 self.kernel_r,
                 self.kernel_z,
                 self.kernel_h,
-                self.recurrent_kernel_r,
-                self.recurrent_kernel_z,
-                self.recurrent_kernel_h,
+                self.recurrent_kernel_r * rec_dp_mask[0],
+                self.recurrent_kernel_z * rec_dp_mask[1],
+                self.recurrent_kernel_h * rec_dp_mask[2],
             ],
             biases=[
                 self.bias_r_i,
@@ -472,7 +484,7 @@ class CuDNNLSTM(_CuDNNRNN):
 
         self.built = True
 
-    def _process_batch(self, inputs, initial_state):
+    def _process_batch(self, inputs, initial_state, training):
         import tensorflow as tf
         inputs = tf.transpose(inputs, (1, 0, 2))
         input_h = initial_state[0]
@@ -480,16 +492,25 @@ class CuDNNLSTM(_CuDNNRNN):
         input_h = tf.expand_dims(input_h, axis=0)
         input_c = tf.expand_dims(input_c, axis=0)
 
+        if (0 < self.recurrent_dropout < 1 and
+                self._recurrent_dropout_mask is None):
+            self._recurrent_dropout_mask = _generate_dropout_mask(
+                K.ones((self.units, self.units)),
+                self.recurrent_dropout,
+                training=training,
+                count=4)
+        rec_dp_mask = self._recurrent_dropout_mask
+
         params = self._canonical_to_params(
             weights=[
                 self.kernel_i,
                 self.kernel_f,
                 self.kernel_c,
                 self.kernel_o,
-                self.recurrent_kernel_i,
-                self.recurrent_kernel_f,
-                self.recurrent_kernel_c,
-                self.recurrent_kernel_o,
+                self.recurrent_kernel_i * rec_dp_mask[0],
+                self.recurrent_kernel_f * rec_dp_mask[1],
+                self.recurrent_kernel_c * rec_dp_mask[2],
+                self.recurrent_kernel_o * rec_dp_mask[3],
             ],
             biases=[
                 self.bias_i_i,
